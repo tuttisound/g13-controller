@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>G13Manager</string>
+    <key>CFBundleDisplayName</key>
+    <string>G13 Manager</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.tuttisound.G13Manager</string>
+    <key>CFBundleExecutable</key>
+    <string>G13Manager</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>G13 Manager reads input from the Logitech G13 keypad to translate its keys into keystrokes, text, mouse actions, and macros.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>G13 Manager uses System Events to switch Mission Control spaces when you bind a key to Space Left/Right.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Local build — G13 Manager</string>
+</dict>
+</plist>
