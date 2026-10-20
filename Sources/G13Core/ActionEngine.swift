@@ -15,6 +15,9 @@ public final class ActionEngine {
 
     private var continuousTasks: [InputID: Task<Void, Never>] = [:]
     private var heldMouseButtons: [InputID: MouseButton] = [:]
+    /// Newest key sequence started by a press. Each one waits for the one before
+    /// it, so a press during typing queues instead of interleaving characters.
+    private var typingTask: Task<Void, Never>?
 
     /// Hold-to-repeat timing (initial delay before repeating, then interval).
     private let repeatInitialDelayNs: UInt64 = 350_000_000
@@ -61,13 +64,16 @@ public final class ActionEngine {
 
     /// Run an action to completion as a single discrete effect (used for macro
     /// steps): no press/hold/repeat semantics — keystroke = one tap, click = one
-    /// click, scroll/move = one tick. Reuses the same primitives as `perform`.
-    public func performOnce(_ action: BindingAction) {
+    /// click, scroll/move = one tick, key sequence = typed out in full before
+    /// returning. Reuses the same primitives as `perform`.
+    public func performOnce(_ action: BindingAction) async {
         switch action {
         case .none:
             break
         case .keystroke(let chord):
-            if let (code, flags) = KeyCodeTable.resolve(key: chord.key, modifiers: chord.modifiers) {
+            if let sequence = chord.sequence {
+                await type(sequence)
+            } else if let (code, flags) = KeyCodeTable.resolve(key: chord.key, modifiers: chord.modifiers) {
                 tapKey(code, flags: flags)
             }
         case .text(let s):
@@ -128,13 +134,22 @@ public final class ActionEngine {
         }
     }
 
-    /// Cancel all continuous activity and release any held mouse buttons
-    /// (call on master-disable, device removal, or app quit).
-    public func cancelAll() {
+    /// Stop key repeats and scroll/move drives and release held mouse buttons —
+    /// what a change of frontmost app needs. A running macro or key sequence
+    /// keeps going: it may be what switched apps (Open App, then type into it).
+    public func releaseHeld() {
         for (_, t) in continuousTasks { t.cancel() }
         continuousTasks.removeAll()
         for (_, b) in heldMouseButtons { Injector.mouseButton(b, down: false, tagger: tagger) }
         heldMouseButtons.removeAll()
+    }
+
+    /// `releaseHeld()`, and also stop any macro or key sequence (call on config
+    /// edits, master-disable, bank switch, or app quit).
+    public func cancelAll() {
+        releaseHeld()
+        typingTask?.cancel()
+        typingTask = nil
         macroPlayer.cancel()
     }
 
@@ -146,6 +161,11 @@ public final class ActionEngine {
     // MARK: - Keystroke
 
     private func performKeystroke(_ chord: KeyChord, edge: Edge, input: InputID) {
+        if let sequence = chord.sequence {
+            // Typed out in full on press; releasing the G13 key doesn't cut it short.
+            if edge == .down { enqueueTyping(sequence) }
+            return
+        }
         guard let (code, flags) = KeyCodeTable.resolve(key: chord.key, modifiers: chord.modifiers) else {
             Log.action.error("Unknown key: \(chord.key.rawValue, privacy: .public)")
             return
@@ -169,6 +189,38 @@ public final class ActionEngine {
     private func tapKey(_ code: CGKeyCode, flags: CGEventFlags) {
         Injector.key(code, down: true, flags: flags, tagger: tagger)
         Injector.key(code, down: false, flags: flags, tagger: tagger)
+    }
+
+    private func enqueueTyping(_ sequence: KeySequence) {
+        let previous = typingTask
+        typingTask = Task { @MainActor [weak self] in
+            // Cancelling the newest sequence (cancelAll) cancels the queue behind it too.
+            await withTaskCancellationHandler {
+                await previous?.value
+            } onCancel: {
+                previous?.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            await self?.type(sequence)
+        }
+    }
+
+    /// Type `sequence.text` one key tap per character, pausing `intervalMs`
+    /// between characters. Real keystrokes (not a Unicode string) so the active
+    /// input method and app shortcuts see ordinary typing; a character with no
+    /// key on the current layout falls back to Unicode injection. Stops early
+    /// when the surrounding task is cancelled.
+    private func type(_ sequence: KeySequence) async {
+        let pause = UInt64(min(max(0, sequence.intervalMs), KeySequence.maxIntervalMs)) * 1_000_000
+        for (i, character) in sequence.text.enumerated() {
+            if i > 0, pause > 0 { try? await Task.sleep(nanoseconds: pause) }
+            if Task.isCancelled { return }
+            if let (code, flags) = KeyCodeTable.resolve(character: character) {
+                tapKey(code, flags: flags)
+            } else {
+                Injector.text(String(character), tagger: tagger)
+            }
+        }
     }
 
     private func startKeyRepeat(_ input: InputID, code: CGKeyCode, flags: CGEventFlags) {

@@ -159,7 +159,14 @@ public final class AppController {
         let profile = config.profile(forBundleID: bundleID)
         activeProfileID = profile.id
         activeBankIndex = min(max(0, profile.lastActiveBankIndex), 3)
-        engine.cancelAll()       // release anything held in the previous context
+        // Release anything held in the previous context. A macro or key sequence
+        // under way keeps going into the new app (it may have opened it) — unless
+        // that app is this one, where its keys would edit the settings.
+        if let bundleID, bundleID == Bundle.main.bundleIdentifier {
+            engine.cancelAll()
+        } else {
+            engine.releaseHeld()
+        }
         joystick.reset()
         resolveBindings()
         applyBacklight()
@@ -205,16 +212,30 @@ public final class AppController {
         engine.macroProvider = { [weak self] id in self?.config.macro(id: id) }
         joystick.settings = config.settings.joystick
         applyEngineSettings()
-        if !config.settings.masterEnabled {
-            engine.cancelAll()
-            joystick.reset()
-        }
+        engine.cancelAll()                   // an edit (or disabling) stops anything in flight
         handleFocusChange(currentBundleID)   // recompute active profile/bank + backlight
     }
 
     public func setMasterEnabled(_ on: Bool) {
         var c = config
         c.settings.masterEnabled = on
+        apply(c)
+    }
+
+    // MARK: - Export / import
+
+    public func exportConfig(to url: URL) throws {
+        try ConfigStore.export(config, to: url)
+    }
+
+    /// Replace the whole config with `imported` (from `ConfigStore.readImport`).
+    /// The current config is copied to `ConfigStore.preImportURL` first, and
+    /// `openAtLogin` keeps this Mac's value — it mirrors a login item registered
+    /// here, not something a settings file can turn on.
+    public func importConfig(_ imported: Config) throws {
+        try store.savePreImportCopy(config)
+        var c = imported
+        c.settings.openAtLogin = config.settings.openAtLogin
         apply(c)
     }
 

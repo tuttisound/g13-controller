@@ -29,18 +29,25 @@ struct ActionEditorView: View {
         case app = "Open App", openURL = "Open URL", shortcut = "Run Shortcut"
         var id: String { rawValue }
     }
+    enum KeyMode: String, CaseIterable, Identifiable {
+        case single = "Single Key", sequence = "Key Sequence"
+        var id: String { rawValue }
+    }
     enum MouseKind: String, CaseIterable, Identifiable {
         case click = "Click", doubleClick = "Double-click", scroll = "Scroll", move = "Move"
         var id: String { rawValue }
     }
 
     @State private var kind: Kind = .none
+    @State private var keyMode: KeyMode = .single
     @State private var keyName = "a"
     @State private var modCommand = false
     @State private var modShift = false
     @State private var modOption = false
     @State private var modControl = false
     @State private var repeats = false
+    @State private var sequenceText = ""
+    @State private var sequenceIntervalMs = KeySequence.defaultIntervalMs
     @State private var textValue = ""
     @State private var mouseKind: MouseKind = .scroll
     @State private var mouseButton: MouseButton = .left
@@ -125,23 +132,58 @@ struct ActionEditorView: View {
 
     private var keystrokeEditor: some View {
         sectionBox("Keystroke") {
-            Menu(KeyCodeTable.label(for: KeyName(keyName))) {
-                ForEach(KeyCodeTable.groups, id: \.title) { group in
-                    Section(group.title) {
-                        ForEach(group.keys, id: \.rawValue) { k in
-                            Button(KeyCodeTable.label(for: k)) { keyName = k.rawValue }
+            Picker("Keystroke", selection: $keyMode) {
+                ForEach(KeyMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch keyMode {
+            case .single:
+                Menu(KeyCodeTable.label(for: KeyName(keyName))) {
+                    ForEach(KeyCodeTable.groups, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.keys, id: \.rawValue) { k in
+                                Button(KeyCodeTable.label(for: k)) { keyName = k.rawValue }
+                            }
                         }
                     }
                 }
-            }
-            Toggle("⌘ Command", isOn: $modCommand)
-            Toggle("⇧ Shift", isOn: $modShift)
-            Toggle("⌥ Option", isOn: $modOption)
-            Toggle("⌃ Control", isOn: $modControl)
-            if context == .keyBinding {
-                Toggle("Repeat while held", isOn: $repeats)
+                Toggle("⌘ Command", isOn: $modCommand)
+                Toggle("⇧ Shift", isOn: $modShift)
+                Toggle("⌥ Option", isOn: $modOption)
+                Toggle("⌃ Control", isOn: $modControl)
+                if context == .keyBinding {
+                    Toggle("Repeat while held", isOn: $repeats)
+                }
+            case .sequence:
+                TextField("Text to type key by key", text: $sequenceText, axis: .vertical)
+                    .lineLimit(1...4)
+                HStack(spacing: 8) {
+                    Text("Delay between keys")
+                    TextField("ms", text: intervalText)
+                        .frame(width: 64).textFieldStyle(.roundedBorder)
+                    Stepper("", value: $sequenceIntervalMs, in: 0...KeySequence.maxIntervalMs, step: 10)
+                        .labelsHidden()
+                    Text("ms").foregroundStyle(.secondary)
+                }
+                Text("Each character is pressed as its own key on the current keyboard layout, so input methods see ordinary typing; characters with no key are typed as Unicode. ⌥Return adds a line break, which presses Return.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Try it in another app — while this window is in front, the keys type into it.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The delay as live text, so like the other fields it commits per keystroke
+    /// (a `value:` field only commits on Return/focus loss — an edit pending when
+    /// the key or step changes would be lost). Accepts full-width digits.
+    private var intervalText: Binding<String> {
+        Binding(get: { String(sequenceIntervalMs) },
+                set: { text in
+                    let halfWidth = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+                    if let ms = Int(halfWidth.filter { $0.isASCII && $0.isNumber }) { sequenceIntervalMs = ms }
+                })
     }
 
     private var mouseEditor: some View {
@@ -283,7 +325,7 @@ struct ActionEditorView: View {
 
     /// Combined change signal so a single onChange drives commit().
     private var signature: String {
-        "\(kind.rawValue)|\(keyName)|\(modCommand)\(modShift)\(modOption)\(modControl)|\(repeats)|\(textValue)|\(mouseKind.rawValue)|\(mouseButton.rawValue)|\(mouseDirection.rawValue)|\(Int(mouseSpeed))|\(mouseAccelerate)|\(macroID?.uuidString ?? "")|\(mediaKey.rawValue)|\(windowAction.rawValue)|\(systemCommand.rawValue)|\(appBundleID)|\(appArgs)|\(urlString)|\(shortcutName)"
+        "\(kind.rawValue)|\(keyMode.rawValue)|\(keyName)|\(modCommand)\(modShift)\(modOption)\(modControl)|\(repeats)|\(sequenceText)|\(sequenceIntervalMs)|\(textValue)|\(mouseKind.rawValue)|\(mouseButton.rawValue)|\(mouseDirection.rawValue)|\(Int(mouseSpeed))|\(mouseAccelerate)|\(macroID?.uuidString ?? "")|\(mediaKey.rawValue)|\(windowAction.rawValue)|\(systemCommand.rawValue)|\(appBundleID)|\(appArgs)|\(urlString)|\(shortcutName)"
     }
 
     private var modifiers: ModifierSet {
@@ -308,6 +350,9 @@ struct ActionEditorView: View {
             modOption = c.modifiers.contains(.option)
             modControl = c.modifiers.contains(.control)
             repeats = c.repeatsWhileHeld
+            keyMode = c.sequence == nil ? .single : .sequence
+            sequenceText = c.sequence?.text ?? ""
+            sequenceIntervalMs = c.sequence?.intervalMs ?? KeySequence.defaultIntervalMs
         case .text(let s):
             kind = .text; textValue = s
         case .mouse(let m):
@@ -354,7 +399,15 @@ struct ActionEditorView: View {
         case .none:
             new = .none
         case .keystroke:
-            new = .keystroke(KeyChord(key: KeyName(keyName), modifiers: modifiers, repeatsWhileHeld: repeats))
+            switch keyMode {
+            case .single:
+                new = .keystroke(KeyChord(key: KeyName(keyName), modifiers: modifiers, repeatsWhileHeld: repeats))
+            case .sequence:
+                let sequence = KeySequence(text: sequenceText, intervalMs: sequenceIntervalMs)
+                if sequence.intervalMs != sequenceIntervalMs { sequenceIntervalMs = sequence.intervalMs }   // show the clamped value
+                // Modifiers/repeat don't apply to a sequence; keep the key so switching back restores it.
+                new = .keystroke(KeyChord(key: KeyName(keyName), sequence: sequence))
+            }
         case .text:
             new = .text(textValue)
         case .mouse:
@@ -380,6 +433,7 @@ struct ActionEditorView: View {
         case .shortcut:
             new = shortcutName.isEmpty ? .none : .runShortcut(shortcutName)
         }
+        guard new != action else { return }   // e.g. the re-commit after showing a clamped delay
         action = new
     }
 }

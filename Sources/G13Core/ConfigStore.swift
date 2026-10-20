@@ -8,6 +8,8 @@ public final class ConfigStore {
     public let directoryURL: URL
     public let fileURL: URL
     public let backupURL: URL
+    /// The config an import replaced, kept so the import can be undone by hand.
+    public let preImportURL: URL
 
     public init(directory: URL? = nil) {
         let dir: URL
@@ -23,6 +25,7 @@ public final class ConfigStore {
         directoryURL = dir
         fileURL = dir.appendingPathComponent("config.json")
         backupURL = dir.appendingPathComponent("config.backup.json")
+        preImportURL = dir.appendingPathComponent("config.pre-import.json")
     }
 
     // MARK: - Load
@@ -33,7 +36,7 @@ public final class ConfigStore {
         ensureDirectory()
 
         if let config = decode(fileURL) {
-            return sanitized(migrated(config))
+            return Self.sanitized(Self.migrated(config))
         }
 
         if FileManager.default.fileExists(atPath: fileURL.path) {
@@ -41,7 +44,7 @@ public final class ConfigStore {
         }
 
         if let backup = decode(backupURL) {
-            let recovered = sanitized(migrated(backup))
+            let recovered = Self.sanitized(Self.migrated(backup))
             try? save(recovered)          // self-heal the primary file
             Log.config.info("recovered config from backup")
             return recovered
@@ -67,19 +70,55 @@ public final class ConfigStore {
             try? FileManager.default.removeItem(at: backupURL)
             try? FileManager.default.copyItem(at: fileURL, to: backupURL)
         }
+        try Self.encode(config).write(to: fileURL, options: [.atomic])
+    }
+
+    private static func encode(_ config: Config) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(config)
-        try data.write(to: fileURL, options: [.atomic])
+        return try encoder.encode(config)
     }
 
     private func ensureDirectory() {
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
     }
 
+    // MARK: - Export / import
+
+    public enum ImportError: LocalizedError {
+        case notASettingsFile
+
+        public var errorDescription: String? {
+            "This file isn’t a G13 Manager settings file."
+        }
+    }
+
+    /// Write `config` to `url` in the same JSON shape as config.json (Settings › Export).
+    public static func export(_ config: Config, to url: URL) throws {
+        try encode(config).write(to: url, options: [.atomic])
+    }
+
+    /// Read a file written by `export` — a copied config.json or backup works too —
+    /// with the same migration and sanitation as `load()`.
+    public static func readImport(from url: URL) throws -> Config {
+        let data = try Data(contentsOf: url)
+        do {
+            return sanitized(migrated(try JSONDecoder().decode(Config.self, from: data)))
+        } catch {
+            Log.config.error("import of \(url.lastPathComponent, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            throw ImportError.notASettingsFile
+        }
+    }
+
+    /// Keep `config` at `preImportURL` before an import replaces it.
+    public func savePreImportCopy(_ config: Config) throws {
+        ensureDirectory()
+        try Self.export(config, to: preImportURL)
+    }
+
     // MARK: - Migration & sanitation
 
-    private func migrated(_ config: Config) -> Config {
+    private static func migrated(_ config: Config) -> Config {
         var c = config
         // Macro step migration (legacy → RPA `MacroStep`) happens in `Macro.init(from:)`
         // at decode time, so it's already applied here regardless of version. This
@@ -90,7 +129,7 @@ public final class ConfigStore {
 
     /// Guarantee invariants the rest of the app relies on: ≥1 profile, a valid
     /// default id, exactly 4 banks per profile, and an in-range active bank.
-    private func sanitized(_ config: Config) -> Config {
+    private static func sanitized(_ config: Config) -> Config {
         var c = config
         if c.profiles.isEmpty {
             let d = ConfigStore.makeDefault()

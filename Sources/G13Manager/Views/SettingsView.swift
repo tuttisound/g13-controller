@@ -1,8 +1,11 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import G13Core
 
 struct SettingsView: View {
     @Bindable var editor: EditorModel
+    @State private var transferStatus: String?
 
     private var joystick: JoystickSettings { editor.config.settings.joystick }
     private var accel: AccelerationSettings { editor.config.settings.scrollAcceleration }
@@ -68,6 +71,18 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Export / Import") {
+                HStack {
+                    Button("Export Settings…") { exportSettings() }
+                    Button("Import Settings…") { importSettings() }
+                }
+                Text("One JSON file with every profile, bank, key binding, macro, app association and setting. Importing replaces all of them; the settings it replaces are kept as config.pre-import.json.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let transferStatus {
+                    Text(transferStatus).font(.caption)
+                }
+            }
+
             Section("Permissions") {
                 permissionRow("Input Monitoring", granted: editor.controller.inputMonitoringGranted) {
                     Permissions.requestInputMonitoring(); Permissions.openInputMonitoringSettings()
@@ -91,6 +106,62 @@ struct SettingsView: View {
         case .scrollWheel: return "Stick scrolls: up/down = vertical, left/right = horizontal."
         case .disabled: return "Stick does nothing."
         }
+    }
+
+    // MARK: - Export / import
+
+    private func exportSettings() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        let today = Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())
+        panel.nameFieldStringValue = "G13Manager-Settings-\(today).json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try editor.exportConfig(to: url)
+            transferStatus = "Exported to \(url.lastPathComponent)."
+        } catch {
+            showError("Couldn’t export settings", error)
+        }
+    }
+
+    private func importSettings() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let imported: Config
+        do {
+            imported = try ConfigStore.readImport(from: url)
+        } catch {
+            showError("Couldn’t import settings", error)
+            return
+        }
+
+        let confirm = NSAlert()
+        confirm.alertStyle = .warning
+        confirm.messageText = "Replace all settings with “\(url.lastPathComponent)”?"
+        confirm.informativeText = "The file has \(imported.profiles.count) profile(s) and \(imported.macros.count) macro(s). Your current profiles, key bindings, macros, app associations and settings will be replaced; they are kept as config.pre-import.json."
+        confirm.addButton(withTitle: "Import")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try editor.importConfig(imported)
+            transferStatus = "Imported \(url.lastPathComponent)."
+        } catch {
+            showError("Couldn’t import settings", error)
+        }
+    }
+
+    private func showError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     private func permissionRow(_ name: String, granted: Bool, action: @escaping () -> Void) -> some View {

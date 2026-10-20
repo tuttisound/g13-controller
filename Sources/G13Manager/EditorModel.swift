@@ -304,4 +304,20 @@ final class EditorModel {
     func updateSettings(_ block: (inout GlobalSettings) -> Void) {
         mutate { block(&$0.settings) }
     }
+
+    // MARK: - Export / import
+
+    func exportConfig(to url: URL) throws {
+        try controller.exportConfig(to: url)
+    }
+
+    /// Replace everything with `imported`. Open key/step editors are closed
+    /// because their mirrors still hold pre-import values (and would commit them
+    /// back over the import if the ids happen to match).
+    func importConfig(_ imported: Config) throws {
+        try controller.importConfig(imported)
+        if config.profile(id: selectedProfileID) == nil { selectedProfileID = config.defaultProfileID }
+        selectedInput = nil
+        selectedMacroID = nil
+    }
 }

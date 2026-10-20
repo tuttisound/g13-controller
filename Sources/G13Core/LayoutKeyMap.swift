@@ -6,22 +6,50 @@ import Carbon.HIToolbox
 /// the CURRENT keyboard layout. Without this, hard-coded ANSI keycodes type the
 /// wrong characters on non-ANSI layouts (e.g. JIS: ANSI "=" keycode is "^").
 public enum LayoutKeyMap {
-    private static var cachedSourceID: String?
-    private static var map: [Character: (code: CGKeyCode, shift: Bool)] = [:]
+    public typealias Key = (code: CGKeyCode, shift: Bool)
 
-    public static func resolve(_ character: Character) -> (code: CGKeyCode, shift: Bool)? {
+    private static var cachedSourceID: String?
+    private static var map: [Character: Key] = [:]
+    /// `map` without dead keys: a tapped dead key (´ ^ ¨ on German/French, ' " on
+    /// US-International…) starts an accent instead of typing its character.
+    private static var typableMap: [Character: Key] = [:]
+
+    public static func resolve(_ character: Character) -> Key? {
         refresh()
         return map[character]
+    }
+
+    /// Like `resolve`, but only keys that type the character in a single tap.
+    public static func resolveTypable(_ character: Character) -> Key? {
+        refresh()
+        return typableMap[character]
+    }
+
+    /// `resolveTypable`'s table for an installed layout other than the current
+    /// one (e.g. "com.apple.keylayout.USInternational-PC"); nil if not installed.
+    public static func typableKeys(layoutID: String) -> [Character: Key]? {
+        let filter = [kTISPropertyInputSourceID as String: layoutID] as CFDictionary
+        guard let list = TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource],
+              let source = list.first else { return nil }
+        return build(source)?.typable
     }
 
     private static func refresh() {
         guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue() else { return }
         let id = inputSourceID(source)
         if id == cachedSourceID, !map.isEmpty { return }
+        if let maps = build(source) {
+            map = maps.all
+            typableMap = maps.typable
+            cachedSourceID = id
+        }
+    }
 
-        guard let layoutPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return }
+    private static func build(_ source: TISInputSource) -> (all: [Character: Key], typable: [Character: Key])? {
+        guard let layoutPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
         let data = Unmanaged<CFData>.fromOpaque(layoutPtr).takeUnretainedValue() as Data
-        var newMap: [Character: (code: CGKeyCode, shift: Bool)] = [:]
+        var all: [Character: Key] = [:]
+        var typable: [Character: Key] = [:]
 
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
@@ -44,15 +72,31 @@ public enum LayoutKeyMap {
                                              &deadKeyState, 4, &length, &chars)
                     if err == noErr, length == 1, let scalar = Unicode.Scalar(chars[0]) {
                         let c = Character(scalar)
-                        if newMap[c] == nil { newMap[c] = (CGKeyCode(code), shift) }
+                        let key: Key = (CGKeyCode(code), shift)
+                        if all[c] == nil { all[c] = key }
+                        if typable[c] == nil,
+                           !isDeadKey(layout, code: code, modifierState: modifierState, kbdType: kbdType) {
+                            typable[c] = key
+                        }
                     }
                 }
             }
         }
-        if !newMap.isEmpty {
-            map = newMap
-            cachedSourceID = id
-        }
+        if all.isEmpty { return nil }
+        return (all: all, typable: typable)
+    }
+
+    /// A dead key produces no character on its own key-down; it only leaves a
+    /// pending dead-key state for the next key to combine with.
+    private static func isDeadKey(_ layout: UnsafePointer<UCKeyboardLayout>, code: Int,
+                                  modifierState: UInt32, kbdType: UInt32) -> Bool {
+        var deadKeyState: UInt32 = 0
+        var chars = [UniChar](repeating: 0, count: 4)
+        var length = 0
+        let err = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown),
+                                 modifierState, kbdType, 0,
+                                 &deadKeyState, 4, &length, &chars)
+        return err == noErr && length == 0 && deadKeyState != 0
     }
 
     private static func inputSourceID(_ source: TISInputSource) -> String {

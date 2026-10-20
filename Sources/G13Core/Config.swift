@@ -31,11 +31,42 @@ public struct KeyChord: Codable, Hashable, Sendable {
     /// If true, the key is held while the G13 key is held (engages OS auto-repeat);
     /// otherwise a single down+up tap is sent on press.
     public var repeatsWhileHeld: Bool
+    /// When set, a press types this text key by key instead of tapping `key`
+    /// (`modifiers` and `repeatsWhileHeld` don't apply). Optional so chords
+    /// written before sequences existed decode — and re-encode — unchanged.
+    public var sequence: KeySequence?
 
-    public init(key: KeyName, modifiers: ModifierSet = [], repeatsWhileHeld: Bool = false) {
+    public init(key: KeyName, modifiers: ModifierSet = [], repeatsWhileHeld: Bool = false,
+                sequence: KeySequence? = nil) {
         self.key = key
         self.modifiers = modifiers
         self.repeatsWhileHeld = repeatsWhileHeld
+        self.sequence = sequence
+    }
+}
+
+/// Text typed as a series of real keystrokes — one tap per character, resolved
+/// through the current keyboard layout — with a fixed pause between characters.
+public struct KeySequence: Hashable, Sendable {
+    public static let defaultIntervalMs = 30
+    public static let maxIntervalMs = 10_000
+
+    public var text: String
+    /// Pause between one character's key tap and the next, in milliseconds.
+    public var intervalMs: Int
+
+    public init(text: String, intervalMs: Int = KeySequence.defaultIntervalMs) {
+        self.text = text
+        self.intervalMs = min(max(0, intervalMs), KeySequence.maxIntervalMs)
+    }
+}
+
+extension KeySequence: Codable {
+    enum CodingKeys: String, CodingKey { case text, intervalMs }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(text: try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                  intervalMs: try c.decodeIfPresent(Int.self, forKey: .intervalMs) ?? KeySequence.defaultIntervalMs)
     }
 }
 
@@ -241,6 +272,10 @@ public enum BindingAction: Codable, Hashable, Sendable {
         switch self {
         case .none: return "—"
         case .keystroke(let c):
+            if let seq = c.sequence {
+                let shown = seq.text.replacingOccurrences(of: "\n", with: "⏎")
+                return "Keys “\(shown.prefix(16))\(shown.count > 16 ? "…" : "")”"
+            }
             return ModifierSet.symbols(c.modifiers) + KeyCodeTable.label(for: c.key)
         case .text(let s): return "Type “\(s.prefix(16))\(s.count > 16 ? "…" : "")”"
         case .mouse(let m): return m.summary

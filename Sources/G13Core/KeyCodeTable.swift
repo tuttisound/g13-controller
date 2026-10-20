@@ -96,6 +96,22 @@ public enum KeyCodeTable {
         return nil
     }
 
+    /// Resolve one character of a `KeySequence` to the key that types it on the
+    /// current layout (adding Shift where the layout needs it). Nil when no key
+    /// types it in a single tap (kana, emoji, characters only on dead keys…).
+    public static func resolve(character: Character) -> (code: CGKeyCode, flags: CGEventFlags)? {
+        let named: String?
+        switch character {
+        case "\n", "\r", "\r\n": named = "return"
+        case "\t": named = "tab"
+        case " ": named = "space"
+        default: named = nil
+        }
+        if let named, let code = nameToCode[named] { return (code, []) }
+        guard let m = LayoutKeyMap.resolveTypable(character) else { return nil }
+        return (m.code, m.shift ? .maskShift : [])
+    }
+
     /// Friendly label for the GUI.
     public static func label(for name: KeyName) -> String {
         switch name.rawValue {

@@ -2,7 +2,8 @@ import Foundation
 
 /// Replays a `Macro` by running each enabled step's `BindingAction` through the
 /// shared `ActionEngine` (one-shot dispatch) on a cancelable task, pausing
-/// `delayAfterMs` between steps and looping `repeatCount` times.
+/// `delayAfterMs` between steps and looping `repeatCount` times. A key-sequence
+/// step finishes typing before its pause starts.
 @MainActor
 public final class MacroPlayer {
     /// Wired by `ActionEngine.init` so the player reuses the engine's injection.
@@ -21,12 +22,13 @@ public final class MacroPlayer {
             for _ in 0..<count {
                 for step in macro.steps where step.isEnabled {
                     if Task.isCancelled { return }
-                    self.engine?.performOnce(step.action)
+                    await self.engine?.performOnce(step.action)
                     let ms = step.delayAfterMs > 0 ? step.delayAfterMs : 4
                     try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
                 }
             }
-            self.task = nil
+            // A cancelled run must not clear `task` — a newer play() may own it now.
+            if !Task.isCancelled { self.task = nil }
         }
     }
 

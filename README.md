@@ -14,7 +14,8 @@ remapped input with CoreGraphics.
 - **Per-app profiles** that switch automatically when you change the frontmost app.
 - **Four banks per app** selected with M1 / M2 / M3 / MR (this is how "4 profiles" is realized,
   since the hardware has no M4). The active bank's color is shown on the RGB backlight.
-- **Per-key actions**: keystroke (with modifiers, optional hold-to-repeat), typed text
+- **Per-key actions**: keystroke (with modifiers, optional hold-to-repeat — or a **key sequence**
+  that types text one key at a time with a set delay between keys), typed text
   (layout-independent), mouse click/move/scroll, a recorded macro, or nothing.
 - **GUI macro recording** with timing, step editing, and playback.
 - **Configurable joystick**: directional keys / mouse move / **scroll wheel (vertical + horizontal)** /
@@ -70,10 +71,12 @@ The app lives in the menu bar (🎮). Open the window from its menu to:
 - **Keys** — pick a profile + bank, click a G13 key on the layout, and assign its action.
 - **Macros** — record/edit/playback macros and name them.
 - **Profiles** — manage profiles, bank names/colors, and which apps map to which profile.
-- **Settings** — master enable, joystick mode, permissions, open-at-login.
+- **Settings** — master enable, joystick mode, permissions, open-at-login, and
+  **Export / Import** of all settings as one JSON file.
 
 Config is stored at `~/Library/Application Support/dev.tuttisound.G13Manager/config.json`
-(atomic writes + a `config.backup.json`).
+(atomic writes + a `config.backup.json`). An import replaces everything except open-at-login,
+and first saves the replaced settings next to it as `config.pre-import.json`.
 
 ## Architecture
 

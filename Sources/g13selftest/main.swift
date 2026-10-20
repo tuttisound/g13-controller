@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import G13Core
 
 // Plain-executable logic tests (no XCTest/Testing dependency, which aren't
@@ -346,6 +347,146 @@ do {
     } catch {
         check(false, "legacy macro migration threw: \(error)")
     }
+}
+
+// MARK: - Key sequences (Keystroke typing text key by key)
+
+section("Key sequences")
+do {
+    // Single-key chords must encode exactly as before so older builds read them unchanged.
+    if let data = try? JSONEncoder().encode(KeyChord(key: "f5", modifiers: [.command])) {
+        check(!String(decoding: data, as: UTF8.self).contains("sequence"), "single-key chord JSON has no sequence key")
+    } else {
+        check(false, "single-key chord should encode")
+    }
+
+    let typed = BindingAction.keystroke(KeyChord(key: "a", sequence: KeySequence(text: "aiueo", intervalMs: 30)))
+    if let data = try? JSONEncoder().encode(typed),
+       let back = try? JSONDecoder().decode(BindingAction.self, from: data) {
+        check(back == typed, "key-sequence keystroke round-trips")
+    } else {
+        check(false, "key-sequence keystroke should round-trip")
+    }
+    let step = MacroStep(action: typed, delayAfterMs: 100)
+    if let back = try? JSONDecoder().decode(MacroStep.self, from: JSONEncoder().encode(step)) {
+        check(back == step, "key-sequence macro step round-trips")
+    } else {
+        check(false, "key-sequence macro step should round-trip")
+    }
+
+    func decodeSequence(_ json: String) -> KeySequence? {
+        try? JSONDecoder().decode(KeySequence.self, from: Data(json.utf8))
+    }
+    check(decodeSequence(#"{"text":"hi"}"#)?.intervalMs == KeySequence.defaultIntervalMs, "missing intervalMs decodes as default")
+    check(decodeSequence(#"{"text":"hi","intervalMs":-5}"#)?.intervalMs == 0, "negative intervalMs clamps to 0")
+    check(decodeSequence(#"{"text":"hi","intervalMs":999999999}"#)?.intervalMs == KeySequence.maxIntervalMs,
+          "huge intervalMs clamps to max")
+
+    check(typed.summary == "Keys “aiueo”", "sequence summary shows the text")
+    check(BindingAction.keystroke(KeyChord(key: "a", sequence: KeySequence(text: "a\nb"))).summary == "Keys “a⏎b”",
+          "sequence summary shows line breaks as ⏎")
+
+    // Character → key on the current layout; nil means "type as Unicode".
+    check(KeyCodeTable.resolve(character: "\n")?.code == 0x24, "newline → Return key")
+    check(KeyCodeTable.resolve(character: "\t")?.code == 0x30, "tab → Tab key")
+    check(KeyCodeTable.resolve(character: " ")?.code == 0x31, "space → Space key")
+    check(KeyCodeTable.resolve(character: "a")?.flags.contains(.maskShift) == false, "'a' has no shift")
+    check(KeyCodeTable.resolve(character: "A")?.flags.contains(.maskShift) == true, "'A' adds shift")
+    check(KeyCodeTable.resolve(character: "A")?.code == KeyCodeTable.resolve(character: "a")?.code, "'A' is the 'a' key")
+    check(KeyCodeTable.resolve(character: "あ") == nil, "kana has no key → Unicode fallback")
+    check(KeyCodeTable.resolve(character: "😀") == nil, "emoji has no key → Unicode fallback")
+
+    // Dead keys start an accent instead of typing their character, so sequences
+    // must not use them (checked against installed layouts, not the current one;
+    // where keys sit also depends on the Mac's ANSI/ISO/JIS keyboard type).
+    if let german = LayoutKeyMap.typableKeys(layoutID: "com.apple.keylayout.German"),
+       let us = LayoutKeyMap.typableKeys(layoutID: "com.apple.keylayout.US") {
+        check(german["^"] == nil && german["´"] == nil && german["`"] == nil,
+              "German: characters only on dead keys (^ ´ `) are not typable")
+        check(german["z"] != nil && german["ä"] != nil, "German: ordinary keys stay typable")
+        check(us["^"] != nil && us["`"] != nil && us["'"] != nil && us["\""] != nil,
+              "US: ^ ` ' \" are ordinary keys")
+    } else {
+        print("    (German / US layouts not installed — dead-key checks skipped)")
+    }
+}
+
+// MARK: - MacroPlayer (Wait-only macros inject nothing)
+
+section("MacroPlayer")
+MainActor.assumeIsolated {
+    let player = MacroPlayer()
+    player.play(Macro(name: "long", steps: [MacroStep(action: .none, delayAfterMs: 1000)]))
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    player.play(Macro(name: "short", steps: [MacroStep(action: .none, delayAfterMs: 300)]))
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+    check(player.isPlaying, "a cancelled run doesn't clear the newer run's task")
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.45))
+    check(!player.isPlaying, "a finished run clears its task")
+
+    // A change of frontmost app only releases held input; edits/disable stop macros too.
+    let engine = ActionEngine()
+    engine.macroPlayer.play(Macro(name: "wait", steps: [MacroStep(action: .none, delayAfterMs: 300)]))
+    engine.releaseHeld()
+    check(engine.macroPlayer.isPlaying, "releaseHeld keeps a running macro going")
+    engine.cancelAll()
+    check(!engine.macroPlayer.isPlaying, "cancelAll stops a running macro")
+}
+
+// MARK: - Export / import
+
+section("Export / import")
+do {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("g13selftest-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    var cfg = ConfigStore.makeDefault()
+    cfg.profiles[0].banks[0].bindings[.g1] = .keystroke(KeyChord(key: "a", sequence: KeySequence(text: "aiueo")))
+    cfg.macros = [Macro(name: "m", steps: [MacroStep(action: .text("x"), delayAfterMs: 10)])]
+    cfg.settings.joystick.mode = .mouseMove
+    let file = tmp.appendingPathComponent("export.json")
+    do {
+        try ConfigStore.export(cfg, to: file)
+        let back = try ConfigStore.readImport(from: file)
+        check(back.profiles.map(\.id) == cfg.profiles.map(\.id), "export → import keeps profiles")
+        check(back.profiles[0].banks[0].binding(for: .g1) == cfg.profiles[0].banks[0].binding(for: .g1),
+              "export → import keeps a key-sequence binding")
+        check(back.macros == cfg.macros, "export → import keeps macros")
+        check(back.settings.joystick.mode == .mouseMove, "export → import keeps settings")
+    } catch {
+        check(false, "export/import round-trip threw: \(error)")
+    }
+
+    let junk = tmp.appendingPathComponent("junk.json")
+    try? Data(#"{"hello":"world"}"#.utf8).write(to: junk)
+    var rejected = false
+    do { _ = try ConfigStore.readImport(from: junk) } catch ConfigStore.ImportError.notASettingsFile { rejected = true } catch {}
+    check(rejected, "non-settings JSON is rejected with ImportError")
+
+    var short = cfg
+    short.profiles[0].banks = Array(short.profiles[0].banks.prefix(2))
+    try? ConfigStore.export(short, to: file)
+    check((try? ConfigStore.readImport(from: file))?.profiles[0].banks.count == 4, "import pads a profile to 4 banks")
+
+    MainActor.assumeIsolated {
+        let store = ConfigStore(directory: tmp.appendingPathComponent("store"))
+        let controller = AppController(store: store)
+        var local = controller.config
+        local.settings.openAtLogin = true
+        controller.apply(local)
+        var incoming = cfg
+        incoming.settings.openAtLogin = false
+        do {
+            try controller.importConfig(incoming)
+            check(controller.config.profiles.map(\.id) == cfg.profiles.map(\.id), "importConfig replaces profiles")
+            check(controller.config.settings.openAtLogin, "importConfig keeps this Mac's openAtLogin")
+            check((try? ConfigStore.readImport(from: store.preImportURL))?.profiles.map(\.id) == local.profiles.map(\.id),
+                  "importConfig keeps the replaced config as config.pre-import.json")
+            check(store.load().profiles.map(\.id) == cfg.profiles.map(\.id), "imported config is saved")
+        } catch {
+            check(false, "importConfig threw: \(error)")
+        }
+    }
+    try? FileManager.default.removeItem(at: tmp)
 }
 
 // MARK: - LayoutKeyMap (current keyboard layout)

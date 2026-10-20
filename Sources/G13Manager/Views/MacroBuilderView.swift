@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import G13Core
 
@@ -88,7 +89,7 @@ enum StepStyle {
     static func title(_ a: BindingAction) -> String {
         switch a {
         case .none: return "Wait"
-        case .keystroke: return "Keystroke"
+        case .keystroke(let c): return c.sequence == nil ? "Keystroke" : "Key Sequence"
         case .text: return "Type Text"
         case .mouse: return "Mouse"
         case .macro: return "Macro"
@@ -236,7 +237,13 @@ struct MacroCanvas: View {
 
             Spacer()
 
-            Button { editor.controller.play(macro) } label: {
+            Button {
+                // End editing first, so keys the macro types into this window can't
+                // land in the step being edited; then play the live config, which
+                // includes anything that ending the edit just committed.
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                editor.controller.play(editor.macro(macroID) ?? macro)
+            } label: {
                 Label("Run", systemImage: "play.fill")
             }
             .disabled(macro.steps.isEmpty)
